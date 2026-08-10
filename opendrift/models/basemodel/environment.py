@@ -682,10 +682,63 @@ class Environment(Timeable, Configurable):
                     env[var][missing_indices] = np.ma.masked_invalid(
                         env_tmp[var][0:len(missing_indices)]).astype('float32')
                     if profiles_from_reader is not None and var in profiles_from_reader:
+                        var_newly_added = False
                         if 'env_profiles' not in locals():
                             env_profiles = env_profiles_tmp
+                        elif var not in env_profiles:
+                            # A later reader/reader-group has supplied a
+                            # profile variable that is not yet a key in the
+                            # running env_profiles dict (e.g. two readers on
+                            # different files/time axes, each supplying one
+                            # distinct profile variable). Previously this
+                            # fell straight through to the check below,
+                            # which is always False for a brand-new key -
+                            # so this data was silently discarded in favour
+                            # of the configured fallback constant, instead
+                            # of ever being stored. Confirmed to also
+                            # explain pred1dens/pred1lightdep (from a
+                            # ConstantReader after the main physical reader)
+                            # reading back as their raw fallback rather
+                            # than their configured constant in existing
+                            # CMEMS/HPC-Barents runs - see a20_test's
+                            # README.md ("Bug 3" / "Bigger finding").
+                            new_var = np.ma.atleast_2d(env_profiles_tmp[var])
+                            new_z = np.asarray(env_profiles_tmp['z'], dtype=float)
+                            ref_z = np.asarray(env_profiles['z'], dtype=float)
+                            if len(new_z) == len(ref_z) and np.allclose(new_z, ref_z):
+                                regridded = new_var
+                            else:
+                                # Different reader groups can have different
+                                # vertical grids (e.g. a ConstantReader's
+                                # default 2-point [0, -profiles_depth] vs. a
+                                # structured reader's native sigma/z levels).
+                                # Every profile variable is later indexed
+                                # against the single shared
+                                # env_profiles['z'] array (e.g. PASCAL's
+                                # individual.py::get_profile()), so regrid
+                                # onto it here rather than storing mismatched
+                                # depths under the same key. Sorting by
+                                # new_z first makes this robust regardless
+                                # of whether z increases or decreases with
+                                # depth (np.interp only requires its xp
+                                # argument, not the query points, to be
+                                # increasing); a single-level profile (e.g.
+                                # a monkeypatched surface-only reader)
+                                # degrades gracefully to a depth-constant
+                                # value, as intended.
+                                order = np.argsort(new_z)
+                                regridded = np.ma.masked_all((len(ref_z), new_var.shape[1]))
+                                filled = np.ma.filled(new_var, np.nan)
+                                for i in range(new_var.shape[1]):
+                                    regridded[:, i] = np.interp(
+                                        ref_z, new_z[order], filled[order, i])
+                            full_var = np.ma.masked_all((len(ref_z), num_elements_active))
+                            full_var[:, missing_indices] = np.ma.masked_invalid(
+                                regridded[:, 0:len(missing_indices)]).astype('float32')
+                            env_profiles[var] = full_var
+                            var_newly_added = True
                         # TODO: fix to be checked
-                        if var in env_profiles and var in env_profiles_tmp:
+                        if var in env_profiles and var in env_profiles_tmp and not var_newly_added:
                             # If one profile has fewer vertical layers than
                             # the other, we use only the overlapping part
                             if len(env_profiles['z']) != len(
