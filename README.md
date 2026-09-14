@@ -5,6 +5,19 @@
 [![PyPI version](https://badge.fury.io/py/opendrift.svg)](https://badge.fury.io/py/opendrift)
 [![Anaconda-Server Badge](https://anaconda.org/conda-forge/opendrift/badges/version.svg)](https://anaconda.org/conda-forge/opendrift)
 
+> **PASCAL fork.** This is a fork of OpenDrift used by
+> [`pascal_modular`](https://github.com/PASCAL-model/pascal_modular) for
+> advection coupling, and installed alongside it by
+> [`pascal_run`](https://github.com/PASCAL-model/pascal_run). It carries
+> one deliberate change on top of upstream: `basemodel`'s `run()` used to
+> run a simulation to completion in a single call, with its per-timestep
+> loop body inlined directly inside that method. That loop body is now
+> its own public method, `run_1step()`, which `run()` itself just calls
+> in a loop - letting PASCAL's coupler advance the particle tracker by
+> exactly one model timestep at a time (in lockstep with the IBM's own
+> per-timestep update), instead of handing control to OpenDrift for an
+> entire run. Everything else below is unmodified upstream OpenDrift.
+
 opendrift
 =========
 
