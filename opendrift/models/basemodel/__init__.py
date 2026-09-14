@@ -1781,6 +1781,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         logger.debug(opendrift.versions())
 
         self.stop_on_error = stop_on_error
+        self.outfile_name = outfile
+        self.export_variables = export_variables
+        self.export_buffer_length = export_buffer_length
         self.timer_end('configuration')
         self.timer_start('preparing main loop')
 
@@ -1922,10 +1925,10 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         ####################################################################
         # Preparing history array for storage in memory and eventually file
         ####################################################################
-        if export_buffer_length is None:
+        if self.export_buffer_length is None:
             self.export_buffer_length = self.expected_steps_output
         else:
-            self.export_buffer_length = np.minimum(export_buffer_length, self.expected_steps_output)
+            self.export_buffer_length = np.minimum(self.export_buffer_length, self.expected_steps_output)
 
         if self.time_step.days < 0:
             # For backwards simulation, we start at last seeded element
@@ -1940,10 +1943,9 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             self.time = self.start_time
 
         # Add the output variables which are always required
-        if export_variables is not None:
-            export_variables = list(
-                set(export_variables + ['lon', 'lat', 'status']))
-        self.export_variables = export_variables
+        if self.export_variables is not None:
+            self.export_variables = list(
+                set(self.export_variables + ['lon', 'lat', 'status']))
 
         # Create Xarray Dataset to hold result
         coords = {  # Initialize for the part fitting in memory
@@ -2006,11 +2008,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                  'flag_meanings': " ".join(self.origin_marker.values())
                 })
 
-        if outfile is not None:
-            self.io_init(outfile)
-            self.outfile = outfile
-        else:
-            self.outfile = None
+        if self.outfile_name is not None:
+            self.io_init(self.outfile_name)
 
         # Move point seeded on land to ocean
         if self.get_config('seed:ocean_only') is True and \
@@ -2107,8 +2106,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         for i in range(self.expected_steps_calculation):
             self.run_1step()
 
-        self.run_end(outfile=outfile, export_variables=export_variables,
-                export_buffer_length=export_buffer_length)
+        self.run_end()
 
 
     def run_1step(self):
@@ -2127,7 +2125,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                 self.steps_calculation += 1
                 if self.time is not None:
                     self.time = self.time + self.time_step
-                continue
+                return
 
             # Display time to terminal
             logger.debug('===================================' * 2)
@@ -2220,12 +2218,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             if self.steps_calculation <= 1:                    raise ValueError('Simulation stopped within '
                                  'first timestep. ' + self.get_messages())
 
-
-
-
-    def run_end(self,outfile=None,
-            export_variables=None,
-            export_buffer_length=100):
+    def run_end(self):
         """
         Abstracted from original self.run for the part after main loop
 
@@ -2242,8 +2235,8 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # Module specific post processing.
         self.post_run()
 
-        if outfile is not None:
-            logger.debug('Finalising and closing output file: %s' % outfile)
+        if self.outfile_name is not None:
+            logger.debug(f'Finalising and closing output file: {self.outfile_name}')
             self.io_close()
         else:
             if self.num_elements_scheduled() > 0:
@@ -2255,14 +2248,14 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
         # Remove any elements scheduled for deactivation during last step
         self.remove_deactivated_elements()
 
-        if export_buffer_length is None:
+        if self.export_buffer_length is None or self.outfile_name is None:
             pass  # TODO - do this for self.result
         else:  # If output has been flushed to file during run, we
             # need to reimport from file to get all data in memory
             del self.environment
             if hasattr(self, 'environment_profiles'):
                 del self.environment_profiles
-            self.result = xr.open_dataset(outfile)
+            self.result = xr.open_dataset(self.outfile_name)
 
     def increase_age_and_retire(self):
         """Increase age of elements, and retire if older than config setting."""
@@ -2397,7 +2390,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         if final is True or buffer_is_full:
             logger.debug('Writing to file')
-            if self.outfile is not None:
+            if self.outfile_name is not None:
                 self.io_write_buffer()
 
         if final is False and buffer_is_full:
@@ -2483,7 +2476,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             latmin = self.latmin - buffer
             latmax = self.latmax + buffer
         else:
-            lons, lats = self.get_lonlats()
             if 'compare_lonmin' in kwargs:  # checking min/max lon/lat of other simulations
                 lonmin = np.minimum(kwargs['compare_lonmin'], np.nanmin(lons))
                 lonmax = np.maximum(kwargs['compare_lonmax'], np.nanmax(lons))
@@ -2522,8 +2514,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
             if lscale is None:
                 lscale = 'auto'
-
-        globe = crs.globe
 
         meanlat = (latmin + latmax) / 2
         aspect_ratio = float(latmax - latmin) / (float(lonmax - lonmin))
@@ -2638,21 +2628,6 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         # TODO: avoid transposing lon, lat, and avoid returning lon, lat in the first place
         return fig, ax, self.crs_plot, lons.T, lats.T, index_of_first, index_of_last
-
-    def get_lonlats(self):
-        if self.history is not None:
-            lons = self.history['lon']
-            lats = self.history['lat']
-        else:
-            if self.steps_output > 0:
-                lons = np.ma.array(np.reshape(self.elements.lon, (1, -1))).T
-                lats = np.ma.array(np.reshape(self.elements.lat, (1, -1))).T
-            else:
-                lons = np.ma.array(
-                    np.reshape(self.elements_scheduled.lon, (1, -1))).T
-                lats = np.ma.array(
-                    np.reshape(self.elements_scheduled.lat, (1, -1))).T
-        return lons, lats
 
     def animation(self,
                   buffer=.2,
